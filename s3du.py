@@ -102,27 +102,28 @@ def s3_disk_usage_recursive(client,
                         yield entry
                 
             # Deal with the files
-            if page['IsTruncated']:
-                # Too many files to display nicely
-                if (Depth and (Depth <= 0)) or flatten_large_results:
-                    # TODO - Delegate work to a new thread to count and yield the thread
-                    count_summary(node_sizes, flatten_file_stats(page, client))
-                    break
-                else:
-                    for entry in collate_file_stats(page, client):
-                        count_summary(node_sizes, entry)
-                        # Produce details of the subkeys
-                        yield entry
+            if page['Contents']:
+                if page['IsTruncated']:
+                    # Too many files to display nicely
+                    if (Depth and (Depth <= 0)) or flatten_large_results:
+                        # TODO - Delegate work to a new thread to count and yield the thread
+                        count_summary(node_sizes, flatten_file_stats(page, client))
+                        break
+                    else:
+                        for entry in collate_file_stats(page, client):
+                            count_summary(node_sizes, entry)
+                            # Produce details of the subkeys
+                            yield entry
 
-            else:
-                # Can count these easily
-                if Depth and (Depth <= 0):
-                    count_summary(node_sizes, flatten_file_stats(page, client))
                 else:
-                    for entry in collate_file_stats(page, client):
-                        count_summary(node_sizes, entry)
-                        # Produce details of the subkeys
-                        yield entry
+                    # Can count these easily on same process
+                    if Depth and (Depth <= 0):
+                        count_summary(node_sizes, flatten_file_stats(page, client))
+                    else:
+                        for entry in collate_file_stats(page, client):
+                            count_summary(node_sizes, entry)
+                            # Produce details of the subkeys
+                            yield entry
     except Exception as e:
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
         print("Exception: {}".format(e))
