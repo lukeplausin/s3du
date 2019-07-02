@@ -126,9 +126,9 @@ def s3_disk_usage_recursive(client,
                         count_summary(node_sizes, entry)
                         # Produce details of the subkeys
                         yield entry
-        except Exception as e:
-            print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
-            print("Exception: {}".format(e))
+    except Exception as e:
+        print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
+        print("Exception: {}".format(e))
     yield node_sizes
 
 
