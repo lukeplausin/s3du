@@ -100,14 +100,14 @@ def s3_disk_usage_recursive(client,
         for page in page_iterator:
             # Do something with the contents of this prefix
             for prefix in page.get('CommonPrefixes', []):
-                if (Depth <= 0):
+                if Depth and (Depth <= 0):
                     # Don't need to go into detail.
                     # TODO: Fork here
-                    yield file_prefix_stats(
+                    gen_subkey_items = [file_prefix_stats(
                         client=client,
                         Bucket=Bucket,
                         Prefix=prefix['Prefix']
-                    )
+                    )]
                 else:
                     gen_subkey_items = s3_disk_usage_recursive(
                         client=client,
@@ -116,12 +116,12 @@ def s3_disk_usage_recursive(client,
                         Depth=(Depth - 1),
                         Prefix=prefix['Prefix']
                     )
-                    for entry in gen_subkey_items:
-                        # Add totals to this node
-                        count_summary(node_sizes, entry)
-                        if not (Depth and (Depth <= 0)):
-                            # Produce details of the subkeys
-                            yield entry
+                for entry in gen_subkey_items:
+                    # Add totals to this node
+                    count_summary(node_sizes, entry)
+                    if not (Depth and (Depth <= 0)):
+                        # Produce details of the subkeys
+                        yield entry
                 
             # Deal with the files
             if page.get('Contents', None):
