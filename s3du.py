@@ -100,7 +100,7 @@ def s3_disk_usage_recursive(client,
         for page in page_iterator:
             # Do something with the contents of this prefix
             for prefix in page.get('CommonPrefixes', []):
-                if (Depth <= 1):
+                if (Depth <= 0):
                     # Don't need to go into detail.
                     # TODO: Fork here
                     yield file_prefix_stats(
