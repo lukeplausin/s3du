@@ -72,11 +72,11 @@ def flatten_file_stats(page, client):
 
 
 def file_prefix_stats(client, Prefix, Bucket):
-    stats = blank_counter(page['Prefix'])
+    stats = blank_counter(Prefix)
     paginator = client.get_paginator('list_objects_v2')
     page_iterator = paginator.paginate(
-        Bucket=page['Name'],
-        Prefix=page['Prefix']
+        Bucket=Bucket,
+        Prefix=Prefix
     )
     for page in page_iterator:
         for s3_object in page.get('Contents', []):
