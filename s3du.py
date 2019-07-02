@@ -102,7 +102,7 @@ def s3_disk_usage_recursive(client,
                         yield entry
                 
             # Deal with the files
-            if page['Contents']:
+            if page.get('Contents', None):
                 if page['IsTruncated']:
                     # Too many files to display nicely
                     if (Depth and (Depth <= 0)) or flatten_large_results:
