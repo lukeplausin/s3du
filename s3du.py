@@ -163,6 +163,18 @@ def s3_disk_usage(Bucket, Depth=None, Delimiter="/", Prefix="", client=boto3.cli
         #semaphore=Semaphore(max_processes)
     )
 
+
+def human_bytes(size):
+    # 2**10 = 1024
+    power = 2**10
+    n = 0
+    power_labels = {0 : '', 1: 'kilo', 2: 'mega', 3: 'giga', 4: 'tera'}
+    while size > power:
+        size /= power
+        n += 1
+    return size, power_labels[n]+'bytes'
+
+
 if __name__ == "__main__":
     try:
         import argparse 
@@ -171,6 +183,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(add_help=True, description="Display S3 usage by storage tier")
     parser.add_argument("--depth", "-d", type=int, help="Maximum depth (0 by default)", default=-1)
+    parser.add_argument("--human", "-h", type=bool, help="Human readable sizes", default=False)
     parser.add_argument("--bucket", type=str, help="S3 bucket name")
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
     parser.add_argument("--delimiter", type=str, help="S3 bucket delimiter", default="/")
@@ -186,4 +199,7 @@ if __name__ == "__main__":
     for statistic in s3_disk_usage_recursive(client, 
             args.bucket, Depth=(depth-1), Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
         # print("Key: {Key}, Size: {Size}, N: {N}, Oldest: {Oldest}, Newest: {Newest}".format(**statistic))
+        if args.human:
+            statistic['Size'] = human_bytes(statistic['Size'])
         print("b: {Size:>16} N: {N:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(**statistic))
+        
