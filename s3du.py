@@ -65,8 +65,12 @@ def flatten_file_stats(page, client):
             }
         )
         for page in page_iterator:
-            for s3_object in page.get('Contents', []):
-                count_object(stats, s3_object)
+            try:
+                for s3_object in page.get('Contents', []):
+                    count_object(stats, s3_object)
+            except Exception as e:
+                print("Exception: {}".format(e))
+                print("Page: {}".format(page))
     return stats
 
 
@@ -79,48 +83,52 @@ def s3_disk_usage_recursive(client,
         Bucket, Depth=None, Delimiter="/", Prefix="", flatten_large_results=True):
     # Calculate disk usage within S3 and report back to parent
     node_sizes = blank_counter(Prefix)
-    paginator = client.get_paginator('list_objects_v2')
-    page_iterator = paginator.paginate(Bucket=Bucket, Delimiter=Delimiter, Prefix=Prefix)
+    try:
+        paginator = client.get_paginator('list_objects_v2')
+        page_iterator = paginator.paginate(Bucket=Bucket, Delimiter=Delimiter, Prefix=Prefix)
 
-    for page in page_iterator:
-        # Do something with the contents of this prefix
-        for prefix in page.get('CommonPrefixes', []):
-            gen_subkey_items = s3_disk_usage_recursive(
-                client=client,
-                Bucket=Bucket,
-                Delimiter=Delimiter,
-                Depth=(Depth - 1),
-                Prefix=prefix['Prefix']
-            )
-            for entry in gen_subkey_items:
-                # Add totals to this node
-                count_summary(node_sizes, entry)
-                if not (Depth and (Depth <= 0)):
-                    # Produce details of the subkeys
-                    yield entry
-            
-        # Deal with the files
-        if page['IsTruncated']:
-            # Too many files to display nicely
-            if (Depth and (Depth <= 0)) or flatten_large_results:
-                # TODO - Delegate work to a new thread to count and yield the thread
-                count_summary(node_sizes, flatten_file_stats(page, client))
-                break
-            else:
-                for entry in collate_file_stats(page, client):
+        for page in page_iterator:
+            # Do something with the contents of this prefix
+            for prefix in page.get('CommonPrefixes', []):
+                gen_subkey_items = s3_disk_usage_recursive(
+                    client=client,
+                    Bucket=Bucket,
+                    Delimiter=Delimiter,
+                    Depth=(Depth - 1),
+                    Prefix=prefix['Prefix']
+                )
+                for entry in gen_subkey_items:
+                    # Add totals to this node
                     count_summary(node_sizes, entry)
-                    # Produce details of the subkeys
-                    yield entry
+                    if not (Depth and (Depth <= 0)):
+                        # Produce details of the subkeys
+                        yield entry
+                
+            # Deal with the files
+            if page['IsTruncated']:
+                # Too many files to display nicely
+                if (Depth and (Depth <= 0)) or flatten_large_results:
+                    # TODO - Delegate work to a new thread to count and yield the thread
+                    count_summary(node_sizes, flatten_file_stats(page, client))
+                    break
+                else:
+                    for entry in collate_file_stats(page, client):
+                        count_summary(node_sizes, entry)
+                        # Produce details of the subkeys
+                        yield entry
 
-        else:
-            # Can count these easily
-            if Depth and (Depth <= 0):
-                count_summary(node_sizes, flatten_file_stats(page, client))
             else:
-                for entry in collate_file_stats(page, client):
-                    count_summary(node_sizes, entry)
-                    # Produce details of the subkeys
-                    yield entry
+                # Can count these easily
+                if Depth and (Depth <= 0):
+                    count_summary(node_sizes, flatten_file_stats(page, client))
+                else:
+                    for entry in collate_file_stats(page, client):
+                        count_summary(node_sizes, entry)
+                        # Produce details of the subkeys
+                        yield entry
+        except Exception as e:
+            print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
+            print("Exception: {}".format(e))
     yield node_sizes
 
 
