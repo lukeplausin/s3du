@@ -65,12 +65,9 @@ def flatten_file_stats(page, client):
             }
         )
         for page in page_iterator:
-            try:
-                for s3_object in page.get('Contents', []):
+            if page.get('Contents', None):
+                for s3_object in page.get('Contents'):
                     count_object(stats, s3_object)
-            except Exception as e:
-                print("Exception: {}".format(e))
-                print("Page: {}".format(page))
     return stats
 
 
