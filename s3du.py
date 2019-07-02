@@ -71,6 +71,19 @@ def flatten_file_stats(page, client):
     return stats
 
 
+def file_prefix_stats(client, Prefix, Bucket):
+    stats = blank_counter(page['Prefix'])
+    paginator = client.get_paginator('list_objects_v2')
+    page_iterator = paginator.paginate(
+        Bucket=page['Name'],
+        Prefix=page['Prefix']
+    )
+    for page in page_iterator:
+        for s3_object in page.get('Contents', []):
+            count_object(stats, s3_object)
+    return stats
+
+
 def collate_file_stats(page, client):
     for s3_object in page.get('Contents', []):
         yield single_counter(s3_object)
@@ -87,19 +100,28 @@ def s3_disk_usage_recursive(client,
         for page in page_iterator:
             # Do something with the contents of this prefix
             for prefix in page.get('CommonPrefixes', []):
-                gen_subkey_items = s3_disk_usage_recursive(
-                    client=client,
-                    Bucket=Bucket,
-                    Delimiter=Delimiter,
-                    Depth=(Depth - 1),
-                    Prefix=prefix['Prefix']
-                )
-                for entry in gen_subkey_items:
-                    # Add totals to this node
-                    count_summary(node_sizes, entry)
-                    if not (Depth and (Depth <= 0)):
-                        # Produce details of the subkeys
-                        yield entry
+                if (Depth <= 1):
+                    # Don't need to go into detail.
+                    # TODO: Fork here
+                    yield file_prefix_stats(
+                        client=client,
+                        Bucket=Bucket,
+                        Prefix=prefix['Prefix']
+                    )
+                else:
+                    gen_subkey_items = s3_disk_usage_recursive(
+                        client=client,
+                        Bucket=Bucket,
+                        Delimiter=Delimiter,
+                        Depth=(Depth - 1),
+                        Prefix=prefix['Prefix']
+                    )
+                    for entry in gen_subkey_items:
+                        # Add totals to this node
+                        count_summary(node_sizes, entry)
+                        if not (Depth and (Depth <= 0)):
+                            # Produce details of the subkeys
+                            yield entry
                 
             # Deal with the files
             if page.get('Contents', None):
