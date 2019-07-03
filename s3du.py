@@ -168,7 +168,7 @@ def human_bytes(size):
     # 2**10 = 1024
     power = 2**10
     n = 0
-    power_labels = {0 : '', 1: 'kilo', 2: 'mega', 3: 'giga', 4: 'tera'}
+    power_labels = {0 : '', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
     while size > power:
         size /= power
         n += 1
@@ -200,6 +200,8 @@ if __name__ == "__main__":
             args.bucket, Depth=(depth-1), Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
         # print("Key: {Key}, Size: {Size}, N: {N}, Oldest: {Oldest}, Newest: {Newest}".format(**statistic))
         if args.human:
-            statistic['Size'] = human_bytes(statistic['Size'])
-        print("b: {Size:>16} N: {N:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(**statistic))
+            size = human_bytes(statistic['Size'])
+        else:
+            size = statistic['Size']
+        print("b: {PrintSize:>16} N: {N:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(PrintSize=size, **statistic))
         
