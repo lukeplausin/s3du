@@ -183,7 +183,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(add_help=True, description="Display S3 usage by storage tier")
     parser.add_argument("--depth", "-d", type=int, help="Maximum depth (0 by default)", default=-1)
-    parser.add_argument("--human", type=bool, help="Human readable sizes", default=False, action='store_true')
+    parser.add_argument("--human", help="Human readable sizes", default=False, action='store_true')
     parser.add_argument("--bucket", type=str, help="S3 bucket name")
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
     parser.add_argument("--delimiter", type=str, help="S3 bucket delimiter", default="/")
