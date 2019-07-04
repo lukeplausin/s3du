@@ -90,7 +90,7 @@ def collate_file_stats(page, client):
 
 
 def s3_disk_usage_recursive(client, 
-        Bucket, Depth=None, Delimiter="/", Prefix="", flatten_large_results=True):
+        Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", flatten_large_results=True):
     # Calculate disk usage within S3 and report back to parent
     node_sizes = blank_counter(Prefix)
     try:
@@ -100,14 +100,17 @@ def s3_disk_usage_recursive(client,
         for page in page_iterator:
             # Do something with the contents of this prefix
             for prefix in page.get('CommonPrefixes', []):
-                if Depth and (Depth <= 0):
+                if Depth <= 1:
                     # Don't need to go into detail.
                     # TODO: Fork here
-                    gen_subkey_items = [file_prefix_stats(
+                    subkey_stats = file_prefix_stats(
                         client=client,
                         Bucket=Bucket,
                         Prefix=prefix['Prefix']
-                    )]
+                    )
+                    count_summary(node_sizes, subkey_stats)
+                    if Depth > 0:
+                        yield subkey_stats
                 else:
                     gen_subkey_items = s3_disk_usage_recursive(
                         client=client,
@@ -116,10 +119,10 @@ def s3_disk_usage_recursive(client,
                         Depth=(Depth - 1),
                         Prefix=prefix['Prefix']
                     )
-                for entry in gen_subkey_items:
-                    # Add totals to this node
-                    count_summary(node_sizes, entry)
-                    if not (Depth and (Depth <= 0)):
+                    for entry in gen_subkey_items:
+                        # Add totals to this node (if prefix matches keyy)
+                        if (len(entry['Key']) == len(prefix['Prefix'])):
+                            count_summary(node_sizes, entry)
                         # Produce details of the subkeys
                         yield entry
                 
@@ -127,7 +130,7 @@ def s3_disk_usage_recursive(client,
             if page.get('Contents', None):
                 if page['IsTruncated']:
                     # Too many files to display nicely
-                    if (Depth and (Depth <= 0)) or flatten_large_results:
+                    if Depth <= 0 or flatten_large_results:
                         # TODO - Delegate work to a new thread to count and yield the thread
                         count_summary(node_sizes, flatten_file_stats(page, client))
                         break
@@ -135,24 +138,26 @@ def s3_disk_usage_recursive(client,
                         for entry in collate_file_stats(page, client):
                             count_summary(node_sizes, entry)
                             # Produce details of the subkeys
-                            yield entry
+                            if len(entry['Key']) != len(Prefix):
+                                yield entry
 
                 else:
                     # Can count these easily on same process
-                    if Depth and (Depth <= 0):
+                    if Depth <= 0:
                         count_summary(node_sizes, flatten_file_stats(page, client))
                     else:
                         for entry in collate_file_stats(page, client):
                             count_summary(node_sizes, entry)
                             # Produce details of the subkeys
-                            yield entry
+                            if len(entry['Key']) != len(Prefix):
+                                yield entry
     except Exception as e:
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
         print("Exception: {}".format(e))
     yield node_sizes
 
 
-def s3_disk_usage(Bucket, Depth=None, Delimiter="/", Prefix="", client=boto3.client('s3'), max_processes=12):
+def s3_disk_usage(Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", client=boto3.client('s3'), max_processes=12):
     # Calculate disk usage within S3 and report back
     return s3_disk_usage_recursive(
         Bucket=Bucket,
