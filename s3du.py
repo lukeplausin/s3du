@@ -169,15 +169,22 @@ def s3_disk_usage(Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", client=b
     )
 
 
-def human_bytes(size):
+def human_bytes(size, base=2):
     # 2**10 = 1024
-    power = 2**10
+    if base == 2:
+        power = 2**10
+        power_labels = {0 : '', 1: 'Ki', 2: 'Mi', 3: 'Gi', 4: 'Ti'}
+    elif base == 10:
+        power = 10**3
+        power_labels = {0 : '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
+    else:
+        raise ValueError("Unknown base {}".format(base))
+
     n = 0
-    power_labels = {0 : 'B', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
     while size > power:
         size /= power
         n += 1
-    return "{:.1f} {:>3}".format(size, power_labels[n])
+    return "{:.1f} {:>2}".format(size, power_labels[n])
 
 
 if __name__ == "__main__":
@@ -187,7 +194,7 @@ if __name__ == "__main__":
         print("ERROR: You are running Python < 2.7. Please use pip to install argparse:   pip install argparse")
 
     parser = argparse.ArgumentParser(add_help=True, description="Display S3 usage by storage tier")
-    parser.add_argument("--depth", "-d", type=int, help="Maximum depth (0 by default)", default=-1)
+    parser.add_argument("--depth", "-d", type=int, help="Maximum depth (0 by default)", default=-3)
     parser.add_argument("--human", help="Human readable sizes", default=False, action='store_true')
     parser.add_argument("--bucket", type=str, help="S3 bucket name")
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
@@ -195,18 +202,21 @@ if __name__ == "__main__":
     parser.add_argument("--truncate", type=bool, help="Summarise keys with over 1000 results?", default=True)
 
     args = parser.parse_args()
-    if args.depth < 0:
-        depth = None
+    if args.depth <= -3:
+        depth = float('Inf')
     else:
         depth = args.depth
 
     client = boto3.client('s3')
     for statistic in s3_disk_usage_recursive(client, 
-            args.bucket, Depth=(depth-1), Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
+            args.bucket, Depth=depth, Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
         # print("Key: {Key}, Size: {Size}, N: {N}, Oldest: {Oldest}, Newest: {Newest}".format(**statistic))
         if args.human:
             size = human_bytes(statistic['Size'])
+            number = human_bytes(statistic['N'], base=10)
         else:
             size = statistic['Size']
-        print("b: {PrintSize:>16} N: {N:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(PrintSize=size, **statistic))
+            number = statistic['N']
+        print("b: {PrintSize:>16}B N: {PrintNumber:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(
+            PrintSize=size, PrintNumber=number, **statistic))
         
