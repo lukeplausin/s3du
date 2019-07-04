@@ -5,6 +5,9 @@ from multiprocessing import Pool, Semaphore
 
 import datetime
 import dateutil
+import os
+import json
+
 
 tzutc = dateutil.tz.tz.tzutc()
 
@@ -200,6 +203,7 @@ if __name__ == "__main__":
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
     parser.add_argument("--delimiter", type=str, help="S3 bucket delimiter", default="/")
     parser.add_argument("--truncate", type=bool, help="Summarise keys with over 1000 results?", default=True)
+    parser.add_argument("--file", "-f", type=str, help="File name to output data to", default="")
 
     args = parser.parse_args()
     if args.depth <= -3:
@@ -208,15 +212,30 @@ if __name__ == "__main__":
         depth = args.depth
 
     client = boto3.client('s3')
-    for statistic in s3_disk_usage_recursive(client, 
-            args.bucket, Depth=depth, Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
-        # print("Key: {Key}, Size: {Size}, N: {N}, Oldest: {Oldest}, Newest: {Newest}".format(**statistic))
-        if args.human:
-            size = human_bytes(statistic['Size'])
-            number = human_bytes(statistic['N'], base=10)
-        else:
-            size = statistic['Size']
-            number = statistic['N']
-        print("b: {PrintSize:>16}B N: {PrintNumber:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(
-            PrintSize=size, PrintNumber=number, **statistic))
-        
+    if args.file:
+        output_file = args.file
+    else:
+        output_file = os.devnull
+    append_object = False
+    
+    with open(output_file, 'w') as f:
+        f.write("[\n")
+        for statistic in s3_disk_usage_recursive(client, 
+                args.bucket, Depth=depth, Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
+            # Write to stdout
+            if args.human:
+                size = human_bytes(statistic['Size'])
+                number = human_bytes(statistic['N'], base=10)
+            else:
+                size = statistic['Size']
+                number = statistic['N']
+            print("b: {PrintSize:>16}B N: {PrintNumber:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(
+                PrintSize=size, PrintNumber=number, **statistic))
+            # Write to output file
+            if append_object:
+                f.write(",\n")
+            else:
+                append_object = True
+            json.dump(statistic, f, indent=2, default=str)
+
+        f.write("\n]\n")
