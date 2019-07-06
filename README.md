@@ -30,8 +30,15 @@ s3_disk_usage(bucket="my_bucket")
 s3du --help
 
 # List common prefixes and object size totals in 'my-bucket', to a depth
-# of two objects
+# of two objects, under the 'my/file/location' prefix
 s3du --bucket my-bucket --prefix my/file/location --depth 2
+
+# Print entire output to screen in human readable format, and save data
+# into a file called contents.json
+s3du --bucket my-bucket --file contents.json --human
+
+# Analyse a bucket using a delimiter other than the default /
+s3du --bucket my-bucket --delimiter '\'
 ```
 
 The format will look like this, the fields are size in bytes (b), number of files (N), file name, oldest file date (O), newest file date (N):
