@@ -190,7 +190,7 @@ def human_bytes(size, base=2):
     return "{:.1f} {:>2}".format(size, power_labels[n])
 
 
-if __name__ == "__main__":
+def main():
     try:
         import argparse 
     except ImportError:
@@ -239,3 +239,6 @@ if __name__ == "__main__":
             json.dump(statistic, f, indent=2, default=str)
 
         f.write("\n]\n")
+
+if __name__ == '__main__':
+    main()
