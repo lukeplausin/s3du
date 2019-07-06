@@ -92,8 +92,10 @@ def collate_file_stats(page, client):
         yield single_counter(s3_object)
 
 
-def s3_disk_usage_recursive(client, 
-        Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", flatten_large_results=True):
+def s3_disk_usage( 
+            Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", flatten_large_results=True,
+            client=boto3.client('s3')
+        ):
     # Calculate disk usage within S3 and report back to parent
     node_sizes = blank_counter(Prefix)
     try:
@@ -115,7 +117,7 @@ def s3_disk_usage_recursive(client,
                     if Depth > 0:
                         yield subkey_stats
                 else:
-                    gen_subkey_items = s3_disk_usage_recursive(
+                    gen_subkey_items = s3_disk_usage(
                         client=client,
                         Bucket=Bucket,
                         Delimiter=Delimiter,
@@ -158,18 +160,6 @@ def s3_disk_usage_recursive(client,
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
         print("Exception: {}".format(e))
     yield node_sizes
-
-
-def s3_disk_usage(Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", client=boto3.client('s3'), max_processes=12):
-    # Calculate disk usage within S3 and report back
-    return s3_disk_usage_recursive(
-        Bucket=Bucket,
-        Depth=(Depth-1),
-        Delimiter=Delimiter,
-        Prefix=Prefix,
-        client=client
-        #semaphore=Semaphore(max_processes)
-    )
 
 
 def human_bytes(size, base=2):
@@ -220,8 +210,14 @@ def main():
     
     with open(output_file, 'w') as f:
         f.write("[\n")
-        for statistic in s3_disk_usage_recursive(client, 
-                args.bucket, Depth=depth, Delimiter=args.delimiter, Prefix=args.prefix, flatten_large_results=True):
+        for statistic in s3_disk_usage( 
+                Bucket=args.bucket,
+                Depth=depth,
+                Delimiter=args.delimiter,
+                Prefix=args.prefix,
+                flatten_large_results=True,
+                client=client
+            ):
             # Write to stdout
             if args.human:
                 size = human_bytes(statistic['Size'])
