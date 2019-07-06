@@ -13,23 +13,30 @@ This utility counts disk space in S3 by path (and also optionally by storage tie
 
 - This s3du script can be imported into other python projects
 
-```
+```python
 from s3du import s3_disk_usage
 
 s3_disk_usage(bucket="my_bucket")
 ```
 
+# Installation
+
+`pip install git+https://github.com/lukeplausin/s3du.git`
+
 # Usage
 
-```
-git clone https://github.com/lukeplausin/s3du.git
-cd s3du
-python s3du.py --bucket my-bucket --prefix my/file/location --depth 2
+```bash
+# Print help
+s3du --help
+
+# List common prefixes and object size totals in 'my-bucket', to a depth
+# of two objects
+s3du --bucket my-bucket --prefix my/file/location --depth 2
 ```
 
 The format will look like this, the fields are size in bytes (b), number of files (N), file name, oldest file date (O), newest file date (N):
-```
-$ ./s3du.py --bucket my-bucket --depth 1
+```bash
+$ s3du --bucket my-bucket --depth 1
 b:         59516837 N:           567                                                        dist/   O: 2019-07-02 N: 2019-07-02
 b:           170032 N:             1                                            bootstrap.min.css   O: 2019-07-02 N: 2019-07-02
 b:            58072 N:             1                                             bootstrap.min.js   O: 2019-07-02 N: 2019-07-02
