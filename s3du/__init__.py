@@ -11,6 +11,28 @@ import json
 
 tzutc = dateutil.tz.tz.tzutc()
 
+
+def human_bytes(size, base=2):
+    # 2**10 = 1024
+    if base == 2:
+        power = 2**10
+        power_labels = {0 : '', 1: 'Ki', 2: 'Mi', 3: 'Gi', 4: 'Ti'}
+    elif base == 10:
+        power = 10**3
+        power_labels = {0 : '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
+    else:
+        raise ValueError("Unknown base {}".format(base))
+
+    n = 0
+    while size > power:
+        size /= power
+        n += 1
+    if n == 0:
+        return "{:d} {:>2}".format(size, power_labels[n])
+    else:
+        return "{:.1f} {:>2}".format(size, power_labels[n])
+
+
 class Prefix():
     def __init__(self, data=None, key=""):
         if data is None:
@@ -52,7 +74,7 @@ class Prefix():
 
 
 class S3Counter():
-    def __init__(self, prefix='', separator='/', depth=-1, limit=5):
+    def __init__(self, prefix='', separator='/', depth=-1, limit=20, file_name="", human=False):
         # Start with basic counter
         self.separator = separator
         self.prefix = prefix
@@ -60,12 +82,30 @@ class S3Counter():
         self.limit = limit
         self.current_prefix = separator + prefix
         self.counters = [Prefix(key=prefix)]
+        self.human = human
+
+        self.file_name = file_name
+        if self.file_name:
+            self.output_file = open(file_name, 'w')
+
+    def __del__(self):
+        if self.file_name:
+            self.output_file.close()
 
     def report(self, counter):
         # Report a counter which has finished counting
-        print("{size:>16} B  {count:>13} {key:>60}".format(
-                size=counter.size, count=counter.number_objects, key=counter.key))
+        if self.human:
+            print("{size:>16}B  {count:>13} {key:>60}".format(
+                    size=human_bytes(counter.size), count=human_bytes(counter.number_objects, base=10), key=counter.key))
+        else:
+            print("{size:>16}   {count:>13} {key:>60}".format(
+                    size=counter.size, count=counter.number_objects, key=counter.key))
 
+        if self.file_name: 
+            self.output_file.write('{{"N":{number_objects}, "size":{size}, "key":"{key}", "oldest":"{oldest}", "newest":"{newest}", "breakdown":{breakdown_str}}}\n'.format(
+                breakdown_str=json.dumps(counter.breakdown), **vars(counter)))
+
+        # f.write("\n]\n")
     def report_omission(self):
         print("                         additional objects under \"{}\" omitted...".format(
             self.counters[-1].key
@@ -148,52 +188,36 @@ async def count_page(counter, page):
 
 
 async def s3_disk_usage( 
-            Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", MaxObjectsToDisplay=10,
-            client=boto3.client('s3')
+            Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", MaxObjectsToDisplay=10, File="",
+            Human=False, client=boto3.client('s3')
         ):
     # Calculate disk usage within S3 and report back to parent
-    counter = S3Counter(prefix=Prefix, depth=Depth, separator=Delimiter, limit=MaxObjectsToDisplay)
+    counter = S3Counter(
+        prefix=Prefix,
+        depth=Depth,
+        separator=Delimiter,
+        limit=MaxObjectsToDisplay,
+        file_name=File,
+        human=Human
+    )
     try:
         paginator = client.get_paginator('list_objects_v2')
         page_iterator = paginator.paginate(Bucket=Bucket, Prefix=Prefix) # Delimiter=Delimiter
 
         last_page = {"Contents": []}
-        # t_start = datetime.datetime.now()
-        # n_pages = 0
         task = asyncio.create_task(count_page(counter, last_page))
         for page in page_iterator:
             # Count the files
             await task
             last_page = page
             task = asyncio.create_task(count_page(counter, last_page))
-            # Measure speed. Last measurement - async 3.38 pages / sec on my laptop, sync: 
-            # t_now = datetime.datetime.now()
-            # t_diff = t_now - t_start
-            # n_pages = n_pages + 1
-            # print("{} pages per second".format(n_pages / t_diff.total_seconds()))
+            # Measured speed difference between synchronous and asynchronous methods was marginal..
         await task
+        await count_page(counter, page)
     except Exception as e:
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
         print("Exception: {}".format(e))
         raise(e)
-
-
-def human_bytes(size, base=2):
-    # 2**10 = 1024
-    if base == 2:
-        power = 2**10
-        power_labels = {0 : '', 1: 'Ki', 2: 'Mi', 3: 'Gi', 4: 'Ti'}
-    elif base == 10:
-        power = 10**3
-        power_labels = {0 : '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
-    else:
-        raise ValueError("Unknown base {}".format(base))
-
-    n = 0
-    while size > power:
-        size /= power
-        n += 1
-    return "{:.1f} {:>2}".format(size, power_labels[n])
 
 
 def main():
@@ -208,8 +232,8 @@ def main():
     parser.add_argument("--bucket", type=str, help="S3 bucket name")
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
     parser.add_argument("--delimiter", type=str, help="S3 bucket delimiter", default="/")
-    parser.add_argument("--truncate", type=int, help="Truncate list over N results?", default=5)
-    parser.add_argument("--file", "-f", type=str, help="File name to output data to", default="")
+    parser.add_argument("--truncate", type=int, help="Truncate list over N results?", default=25)
+    parser.add_argument("--file", "-f", type=str, help="File name to output data to (in jsonl format)", default="")
 
     args = parser.parse_args()
     if args.depth <= -3:
@@ -218,40 +242,16 @@ def main():
         depth = args.depth
 
     client = boto3.client('s3')
-    # if args.file:
-    #     output_file = args.file
-    # else:
-    #     output_file = os.devnull
-    # append_object = False
-    
-    # with open(output_file, 'w') as f:
-    #     f.write("[\n")
-        # for statistic in s3_disk_usage( 
     asyncio.run(s3_disk_usage( 
         Bucket=args.bucket,
         Depth=depth,
         Delimiter=args.delimiter,
         Prefix=args.prefix,
         MaxObjectsToDisplay=args.truncate,
+        File=args.file,
+        Human=args.human,
         client=client
     ))
-        #     # Write to stdout
-        #     if args.human:
-        #         size = human_bytes(statistic['Size'])
-        #         number = human_bytes(statistic['N'], base=10)
-        #     else:
-        #         size = statistic['Size']
-        #         number = statistic['N']
-        #     print("b: {PrintSize:>16}B N: {PrintNumber:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(
-        #         PrintSize=size, PrintNumber=number, **statistic))
-        #     # Write to output file
-        #     if append_object:
-        #         f.write(",\n")
-        #     else:
-        #         append_object = True
-        #     json.dump(statistic, f, indent=2, default=str)
-
-        # f.write("\n]\n")
 
 if __name__ == '__main__':
     main()
