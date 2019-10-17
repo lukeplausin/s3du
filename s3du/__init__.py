@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import boto3
-from multiprocessing import Pool, Semaphore
+import asyncio
 
 import datetime
 import dateutil
@@ -11,155 +11,144 @@ import json
 
 tzutc = dateutil.tz.tz.tzutc()
 
-def blank_counter(Key):
-    if not Key:
-        Key = "."
-    return {
-        "N": 0,
-        "Size": 0,
-        "Oldest": datetime.datetime.now(tz=tzutc),
-        "Newest": datetime.datetime(year=1990, month=1, day=1).astimezone(tzutc),
-        "Key": Key
-    }
-
-def single_counter(s3_object):
-    return {
-        "N": 1,
-        s3_object['StorageClass']: s3_object['Size'],
-        "Size": s3_object['Size'],
-        "Oldest": s3_object['LastModified'],
-        "Newest": s3_object['LastModified'],
-        "Key": s3_object['Key']
-    }
-
-def count_object(counter, s3_object):
-    counter["N"] = counter["N"] + 1
-    counter["Size"] = counter["Size"] + s3_object['Size']
-    counter["Oldest"] = min(counter["Oldest"], s3_object['LastModified'])
-    counter["Newest"] = max(counter["Newest"], s3_object['LastModified'])
-    counter[s3_object['StorageClass']] = counter.get(s3_object['StorageClass'], 0) + s3_object['Size']
-
-def count_summary(counter, s3_object_summary):
-    for key, value in s3_object_summary.items():
-        if key == "Key":
-            pass
-        elif key == "Oldest":
-            counter["Oldest"] = min(counter["Oldest"], s3_object_summary['Oldest'])
-        elif key == "Newest":
-            counter["Newest"] = max(counter["Newest"], s3_object_summary['Newest'])
+class Prefix():
+    def __init__(self, data=None, key=""):
+        if data is None:
+            self.number_objects = 0
+            self.size = 0
+            self.oldest = datetime.datetime.now(tz=tzutc)
+            self.newest = datetime.datetime(year=1990, month=1, day=1).astimezone(tzutc)
+            self.key = key
+            self.breakdown = {}
         else:
-            counter[key] = counter.get(key, 0) + value
-
-
-def flatten_file_stats(page, client):
-    stats = blank_counter(page['Prefix'])
-
-    for s3_object in page.get('Contents', []):
-        count_object(stats, s3_object)
-
-    if page['IsTruncated']:
-        paginator = client.get_paginator('list_objects_v2')
-        page_iterator = paginator.paginate(
-            Bucket=page['Name'],
-            Delimiter=page['Delimiter'],
-            Prefix=page['Prefix'],
-            PaginationConfig={
-                'StartingToken': page['NextContinuationToken']
+            self.number_objects = 1
+            self.size = data['Size']
+            self.oldest = data['LastModified']
+            self.newest = data['LastModified']
+            self.key = data['Key']
+            self.breakdown = {
+                data['StorageClass']: data['Size']
             }
+
+    def count(self, data):
+        self.number_objects = self.number_objects + 1
+        self.size = self.size + data['Size']
+        self.oldest = min(self.oldest, data['LastModified'])
+        self.newest = max(self.newest, data['LastModified'])
+        self.breakdown[data['StorageClass']] = (
+            self.breakdown.get(data['StorageClass'], 0) + data['Size']
         )
-        for page in page_iterator:
-            if page.get('Contents', None):
-                for s3_object in page.get('Contents'):
-                    count_object(stats, s3_object)
-    return stats
+
+    def __add__(self, other):
+        self.number_objects = self.number_objects + other.number_objects
+        self.size = self.size + other.size
+        self.oldest = min(self.oldest, other.oldest)
+        self.newest = max(self.newest, other.newest)
+        for storage_tier in (set(self.breakdown.keys()).union(set(other.breakdown.keys()))):
+            self.breakdown[storage_tier] = (
+                self.breakdown.get(storage_tier, 0) + other.breakdown.get(storage_tier, 0)
+            )
+        return self
 
 
-def file_prefix_stats(client, Prefix, Bucket):
-    stats = blank_counter(Prefix)
-    paginator = client.get_paginator('list_objects_v2')
-    page_iterator = paginator.paginate(
-        Bucket=Bucket,
-        Prefix=Prefix
-    )
-    for page in page_iterator:
-        for s3_object in page.get('Contents', []):
-            count_object(stats, s3_object)
-    return stats
+class S3Counter():
+    def __init__(self, prefix='', separator='/', depth=-1):
+        # Start with basic counter
+        self.separator = separator
+        self.prefix = prefix
+        self.depth = depth
+        self.current_prefix = separator + prefix
+        self.counters = [Prefix(key=prefix)]
+
+    def report(self, counter):
+        # Report a counter which has finished counting
+        print("{size:>16}B  N: {count:>13} {key:>60}".format(
+                size=counter.size, count=counter.number_objects, key=counter.key))
 
 
-def collate_file_stats(page, client):
-    for s3_object in page.get('Contents', []):
-        yield single_counter(s3_object)
+    def _compare_prefixes(self, l_prefix, r_prefix):
+        # Check if prefixes are 'equal' to the given depth
+        l_prefix_parts = (self.separator + l_prefix.lstrip(self.separator)).split(self.separator)
+        r_prefix_parts = (self.separator + r_prefix.lstrip(self.separator)).split(self.separator)
+
+        if self.depth >= 0:
+            return l_prefix_parts[0:min(len(l_prefix_parts), self.depth)] == r_prefix_parts[0:min(len(r_prefix_parts), self.depth)]
+        else:
+            l_prefix_parts == r_prefix_parts
+
+
+    def count(self, data_object):
+        # Make sure that the correct counters are being held
+        prefix_dir = (self.separator + data_object['Key']).rsplit(self.separator, maxsplit=1)[0]
+
+        if self.depth >= 0 and data_object['Key'].count('/') < self.depth:
+            # Show this object in the totals
+            # print('Displaying object {}.'.format(data_object['Key']))
+            self.report(Prefix(data=data_object))
+        elif self._compare_prefixes(self.current_prefix, prefix_dir):
+            # Don't show the object just count it
+            # print('Counting object {}.'.format(data_object['Key']))
+            self.counters[-1].count(data_object)
+        else:
+            # Current prefix is not correct, adjust it
+            print('Adjusting prefixes. Current {}, new {}'.format(self.current_prefix, prefix_dir))
+            prefix_increment = ''
+            index = 0
+            for prefix_part in prefix_dir.split(self.separator):
+                prefix_increment = (prefix_increment + prefix_part + self.separator).lstrip(self.separator)
+                if len(self.counters) > index and not self.counters[index].key == prefix_increment:
+                    # Path from this point does not exist in the new path
+                    while len(self.counters) > index:
+                        counter = self.counters.pop()
+                        # Add totals to next counter
+                        self.counters[-1] = self.counters[-1] + counter
+                        # Report totals for this prefix
+                        self.report(counter)
+                if len(self.counters) <= index:
+                    # Create a new counter for this path
+                    if data_object['Key'][-1] == self.separator:
+                        # print('Adding new marker object {}.'.format(prefix_increment))
+                        self.counters.append(Prefix(data=data_object))
+                    else:
+                        # print('Adding new prefix {}.'.format(prefix_increment))
+                        self.counters.append(Prefix(key=prefix_increment))
+                    # print('Markers: {}'.format(self.counters))
+                self.current_prefix = self.separator + prefix_increment.lstrip(self.separator).rstrip(self.separator)
+                index = index + 1
+
+
+    def count_list(self, data_list):
+        if not data_list:
+            return
+        prefix_dir_end = (self.separator + data_list[-1]['Key']).rsplit(self.separator, maxsplit=1)[0]
+        if self._compare_prefixes(self.current_prefix, prefix_dir_end):
+            # All items on this page are in the current prefix. Do a fast count.
+            for data_object in data_list:
+                self.counters[-1].count(data_object)
+        else:
+            # Items are a combination of prefixes. Check all prefixes while counting
+            for data_object in data_list:
+                self.count(data_object)
 
 
 def s3_disk_usage( 
-            Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", flatten_large_results=True,
+            Bucket, Depth=float('Inf'), Delimiter="/", Prefix="", #flatten_large_results=True,
             client=boto3.client('s3')
         ):
     # Calculate disk usage within S3 and report back to parent
-    node_sizes = blank_counter(Prefix)
+    counter = S3Counter(prefix=Prefix, depth=Depth, separator=Delimiter)
     try:
         paginator = client.get_paginator('list_objects_v2')
-        page_iterator = paginator.paginate(Bucket=Bucket, Delimiter=Delimiter, Prefix=Prefix)
+        page_iterator = paginator.paginate(Bucket=Bucket, Prefix=Prefix) # Delimiter=Delimiter
 
         for page in page_iterator:
             # Do something with the contents of this prefix
-            for prefix in page.get('CommonPrefixes', []):
-                if Depth <= 1:
-                    # Don't need to go into detail.
-                    # TODO: Fork here
-                    subkey_stats = file_prefix_stats(
-                        client=client,
-                        Bucket=Bucket,
-                        Prefix=prefix['Prefix']
-                    )
-                    count_summary(node_sizes, subkey_stats)
-                    if Depth > 0:
-                        yield subkey_stats
-                else:
-                    gen_subkey_items = s3_disk_usage(
-                        client=client,
-                        Bucket=Bucket,
-                        Delimiter=Delimiter,
-                        Depth=(Depth - 1),
-                        Prefix=prefix['Prefix']
-                    )
-                    for entry in gen_subkey_items:
-                        # Add totals to this node (if prefix matches keyy)
-                        if (len(entry['Key']) == len(prefix['Prefix'])):
-                            count_summary(node_sizes, entry)
-                        # Produce details of the subkeys
-                        yield entry
-                
             # Deal with the files
-            if page.get('Contents', None):
-                if page['IsTruncated']:
-                    # Too many files to display nicely
-                    if Depth <= 0 or flatten_large_results:
-                        # TODO - Delegate work to a new thread to count and yield the thread
-                        count_summary(node_sizes, flatten_file_stats(page, client))
-                        break
-                    else:
-                        for entry in collate_file_stats(page, client):
-                            count_summary(node_sizes, entry)
-                            # Produce details of the subkeys
-                            if len(entry['Key']) != len(Prefix):
-                                yield entry
-
-                else:
-                    # Can count these easily on same process
-                    if Depth <= 0:
-                        count_summary(node_sizes, flatten_file_stats(page, client))
-                    else:
-                        for entry in collate_file_stats(page, client):
-                            count_summary(node_sizes, entry)
-                            # Produce details of the subkeys
-                            if len(entry['Key']) != len(Prefix):
-                                yield entry
+            counter.count_list(page.get('Contents', []))
     except Exception as e:
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
         print("Exception: {}".format(e))
-    yield node_sizes
+        raise(e)
 
 
 def human_bytes(size, base=2):
@@ -192,7 +181,7 @@ def main():
     parser.add_argument("--bucket", type=str, help="S3 bucket name")
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
     parser.add_argument("--delimiter", type=str, help="S3 bucket delimiter", default="/")
-    parser.add_argument("--truncate", type=bool, help="Summarise keys with over 1000 results?", default=True)
+    # parser.add_argument("--truncate", type=bool, help="Summarise keys with over 1000 results?", default=True)
     parser.add_argument("--file", "-f", type=str, help="File name to output data to", default="")
 
     args = parser.parse_args()
@@ -202,39 +191,40 @@ def main():
         depth = args.depth
 
     client = boto3.client('s3')
-    if args.file:
-        output_file = args.file
-    else:
-        output_file = os.devnull
-    append_object = False
+    # if args.file:
+    #     output_file = args.file
+    # else:
+    #     output_file = os.devnull
+    # append_object = False
     
-    with open(output_file, 'w') as f:
-        f.write("[\n")
-        for statistic in s3_disk_usage( 
-                Bucket=args.bucket,
-                Depth=depth,
-                Delimiter=args.delimiter,
-                Prefix=args.prefix,
-                flatten_large_results=True,
-                client=client
-            ):
-            # Write to stdout
-            if args.human:
-                size = human_bytes(statistic['Size'])
-                number = human_bytes(statistic['N'], base=10)
-            else:
-                size = statistic['Size']
-                number = statistic['N']
-            print("b: {PrintSize:>16}B N: {PrintNumber:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(
-                PrintSize=size, PrintNumber=number, **statistic))
-            # Write to output file
-            if append_object:
-                f.write(",\n")
-            else:
-                append_object = True
-            json.dump(statistic, f, indent=2, default=str)
+    # with open(output_file, 'w') as f:
+    #     f.write("[\n")
+        # for statistic in s3_disk_usage( 
+    s3_disk_usage( 
+        Bucket=args.bucket,
+        Depth=depth,
+        Delimiter=args.delimiter,
+        Prefix=args.prefix,
+        # flatten_large_results=True,
+        client=client
+    )
+        #     # Write to stdout
+        #     if args.human:
+        #         size = human_bytes(statistic['Size'])
+        #         number = human_bytes(statistic['N'], base=10)
+        #     else:
+        #         size = statistic['Size']
+        #         number = statistic['N']
+        #     print("b: {PrintSize:>16}B N: {PrintNumber:>13} {Key:>60}   O: {Oldest:%Y-%m-%d} N: {Newest:%Y-%m-%d}".format(
+        #         PrintSize=size, PrintNumber=number, **statistic))
+        #     # Write to output file
+        #     if append_object:
+        #         f.write(",\n")
+        #     else:
+        #         append_object = True
+        #     json.dump(statistic, f, indent=2, default=str)
 
-        f.write("\n]\n")
+        # f.write("\n]\n")
 
 if __name__ == '__main__':
     main()
