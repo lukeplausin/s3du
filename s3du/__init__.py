@@ -95,11 +95,13 @@ class S3Counter():
     def report(self, counter):
         # Report a counter which has finished counting
         if self.human:
-            print("{size:>16}B  {count:>13} {key:>60}  {oldest:%Y-%m-%d} - {newest:%Y-%m-%d}".format(
-                    size=human_bytes(counter.size), count=human_bytes(counter.number_objects, base=10), key=counter.key))
+            print("{size:>16}B  {count:>13} {key:>60}  {oldest:%Y-%m-%d} {newest:%Y-%m-%d}".format(
+                    size=human_bytes(counter.size), count=human_bytes(counter.number_objects, base=10), key=counter.key,
+                    oldest=counter.oldest, newest=counter.newest))
         else:
-            print("{size:>16}   {count:>13} {key:>60}  {oldest:%Y-%m-%d} - {newest:%Y-%m-%d}".format(
-                    size=counter.size, count=counter.number_objects, key=counter.key))
+            print("{size:>16}   {count:>13} {key:>60}  {oldest:%Y-%m-%d} {newest:%Y-%m-%d}".format(
+                    size=counter.size, count=counter.number_objects, key=counter.key,
+                    oldest=counter.oldest, newest=counter.newest))
 
         if self.file_name: 
             self.output_file.write('{{"N":{number_objects}, "size":{size}, "key":"{key}", "oldest":"{oldest}", "newest":"{newest}", "breakdown":{breakdown_str}}}\n'.format(
