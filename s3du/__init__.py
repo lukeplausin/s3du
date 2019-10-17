@@ -95,10 +95,10 @@ class S3Counter():
     def report(self, counter):
         # Report a counter which has finished counting
         if self.human:
-            print("{size:>16}B  {count:>13} {key:>60}".format(
+            print("{size:>16}B  {count:>13} {key:>60}  {oldest:%Y-%m-%d} - {newest:%Y-%m-%d}".format(
                     size=human_bytes(counter.size), count=human_bytes(counter.number_objects, base=10), key=counter.key))
         else:
-            print("{size:>16}   {count:>13} {key:>60}".format(
+            print("{size:>16}   {count:>13} {key:>60}  {oldest:%Y-%m-%d} - {newest:%Y-%m-%d}".format(
                     size=counter.size, count=counter.number_objects, key=counter.key))
 
         if self.file_name: 
