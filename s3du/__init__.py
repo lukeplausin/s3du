@@ -170,6 +170,15 @@ class S3Counter():
                 self.current_prefix = self.separator + prefix_increment.lstrip(self.separator).rstrip(self.separator)
                 index = index + 1
 
+    def finalise(self):
+        while self.counters:
+            counter = self.counters.pop()
+            # Add totals to next counter
+            if self.counters:
+                self.counters[-1] = self.counters[-1] + counter
+            # Report totals for this prefix
+            self.report(counter)
+
 
     def count_list(self, data_list):
         if not data_list:
@@ -216,6 +225,7 @@ async def s3_disk_usage(
             # Measured speed difference between synchronous and asynchronous methods was marginal..
         await task
         await count_page(counter, page)
+        counter.finalise()
     except Exception as e:
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
         print("Exception: {}".format(e))
