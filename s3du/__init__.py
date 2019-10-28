@@ -7,6 +7,10 @@ import datetime
 import dateutil
 import os
 import json
+import urllib
+import gzip
+import codecs
+import csv
 
 
 tzutc = dateutil.tz.tz.tzutc()
@@ -196,6 +200,71 @@ class S3Counter():
                 self.count(data_object)
 
 
+def read_inventory_data_file(Bucket, Key, fields, client, page_size=500):
+    # Read an inventory data file from S3 and bunch the data up into pages
+    data_object = client.get_object(Bucket=Bucket, Key=Key)
+    stream = data_object['Body']
+    if 'gzip' in data_object['ContentType']:
+        stream = gzip.GzipFile(fileobj=stream)
+    stream = codecs.iterdecode(stream, encoding='utf-8')
+    reader = csv.reader(stream)
+    page = []
+    types = [str for i in range(len(fields))]
+    for i, field in enumerate(fields):
+        if field == 'Size':
+            types[i] = int
+        elif field == 'LastModified':
+            types[i] = dateutil.parser.parse
+    for line in reader:
+        page.append({
+            fields[i]: types[i](data) for i, data in enumerate(line)
+        })
+        if len(page) >= page_size:
+            yield page
+            page = []
+    yield page
+
+
+def s3_disk_usage_from_inventory( 
+        InventoryLocation, Depth=float('Inf'), Delimiter="/", Prefix="", MaxObjectsToDisplay=10, File="",
+        Human=False, client=boto3.client('s3'), 
+    ):
+    try:
+        inventory_location = urllib.parse.urlparse(InventoryLocation)
+        if not inventory_location.scheme == 's3':
+            raise("Unsupported scheme: {}".format(inventory_location.scheme))
+        inventory_bucket = inventory_location.netloc
+    except Exception as e:
+        raise Exception("An inventory URL must be an S3 location in the format s3://mybucket/myprefix/sourcebucket/2019-10-27T04-00Z/. {}".format(e))
+
+    manifest_object = client.get_object(Bucket=inventory_bucket, Key=(inventory_location.path.strip('/') + '/manifest.json'))
+    manifest = json.load(manifest_object['Body'])
+    if not manifest['fileFormat']:
+        raise Exception("Unsupported report format {}. Supported formats: ['CSV'].".format(manifest['fileFormat']))
+    schema = manifest['fileSchema']
+    fields = [field.strip() for field in schema.split(',')]
+    for i, field in enumerate(fields):
+        if field == 'LastModifiedDate':
+            fields[i] = 'LastModified'
+
+    # Start counting objects
+    counter = S3Counter(
+        prefix=Prefix,
+        depth=Depth,
+        separator=Delimiter,
+        limit=MaxObjectsToDisplay,
+        file_name=File,
+        human=Human
+    )
+
+    for data_file in manifest['files']:
+        try:
+            for page in read_inventory_data_file(Bucket=inventory_bucket, Key=data_file['key'], fields=fields, client=client):
+                counter.count_list(page)
+        except Exception as e:
+            print("Failed to count data file {key}.".format(**data_file))
+
+
 async def count_page(counter, page):
     counter.count_list(page.get('Contents', []))
 
@@ -243,11 +312,13 @@ def main():
     parser = argparse.ArgumentParser(add_help=True, description="Display S3 usage by storage tier")
     parser.add_argument("--depth", "-d", type=int, help="Maximum depth (0 by default)", default=-3)
     parser.add_argument("--human", help="Human readable sizes", default=False, action='store_true')
-    parser.add_argument("--bucket", type=str, help="S3 bucket name")
+    parser.add_argument("--bucket", type=str, help="S3 bucket name. Not required if using inventory reports.")
     parser.add_argument("--prefix", type=str, help="S3 bucket prefix", default="")
     parser.add_argument("--delimiter", type=str, help="S3 bucket delimiter", default="/")
     parser.add_argument("--truncate", type=int, help="Truncate list over N results?", default=25)
     parser.add_argument("--file", "-f", type=str, help="File name to output data to (in jsonl format)", default="")
+    parser.add_argument("--inventory-url", type=str, default="",
+        help="S3 URL to an S3 inventory report (e.g s3://mybucket/myprefix/sourcebucket/2019-10-27T04-00Z/)")
 
     args = parser.parse_args()
     if args.depth <= -3:
@@ -256,16 +327,28 @@ def main():
         depth = args.depth
 
     client = boto3.client('s3')
-    asyncio.run(s3_disk_usage( 
-        Bucket=args.bucket,
-        Depth=depth,
-        Delimiter=args.delimiter,
-        Prefix=args.prefix,
-        MaxObjectsToDisplay=args.truncate,
-        File=args.file,
-        Human=args.human,
-        client=client
-    ))
+    if args.inventory_url:
+        s3_disk_usage_from_inventory(
+            InventoryLocation=args.inventory_url,
+            Depth=depth,
+            Delimiter=args.delimiter,
+            Prefix=args.prefix,
+            MaxObjectsToDisplay=args.truncate,
+            File=args.file,
+            Human=args.human,
+            client=client
+        )
+    else:
+        asyncio.run(s3_disk_usage( 
+            Bucket=args.bucket,
+            Depth=depth,
+            Delimiter=args.delimiter,
+            Prefix=args.prefix,
+            MaxObjectsToDisplay=args.truncate,
+            File=args.file,
+            Human=args.human,
+            client=client
+        ))
 
 if __name__ == '__main__':
     main()
