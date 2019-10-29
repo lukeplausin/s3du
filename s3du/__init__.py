@@ -83,13 +83,17 @@ class Prefix():
 
     def compare(self, other, depth, separator='/'):
         # Check if prefixes are 'equal' to the given depth
-        l_prefix_parts = (separator + self.key.lstrip(separator)).split(separator)
-        r_prefix_parts = (separator + other.key.lstrip(separator)).split(separator)
+        l_prefix_parts = self.key.split(separator)[0:-1]
+        r_prefix_parts = other.key.split(separator)[0:-1]
 
-        if depth >= 0:
+        if depth == 0:
+            return True
+        elif depth > 0:
             # print(l_prefix_parts[0:min(len(l_prefix_parts), depth)])
             # print(r_prefix_parts[0:min(len(r_prefix_parts), depth)])
             return l_prefix_parts[0:min(len(l_prefix_parts), depth)] == r_prefix_parts[0:min(len(r_prefix_parts), depth)]
+            # print(rval)
+            # return rval
         else:
             return l_prefix_parts == r_prefix_parts
 
@@ -141,51 +145,53 @@ class S3Counter():
             self.counters[-1].key
         ))
 
+    def _pop_counter(self):
+        counter = self.counters.pop()
+        # Add totals to next counter
+        if self.counters:
+            self.counters[-1] = self.counters[-1] + counter
+        # Report totals for this prefix
+        self.report(counter)
+
     def _set_prefix(self, key):
         # Set the markers to the given object
 
-        prefix_dir = key.rsplit(self.separator, maxsplit=1)[0]
-        # print('Adjusting prefixes. Current {}, new {}'.format(self.counters[-1].key, prefix_dir))
+        prefix_dir = (self.separator + key.lstrip(self.separator)).rsplit(self.separator, maxsplit=1)[0]
         prefix_parts = prefix_dir.split(self.separator)
-        prefix_parts = prefix_parts[0:min(self.depth, len(prefix_parts))]
+        prefix_parts = prefix_parts[1:min(self.depth + 1, len(prefix_parts))] # +1 to include .
         prefix_increment = ''
-        index = 1
-        for prefix_part in prefix_parts:
-            prefix_increment = (prefix_increment + prefix_part + self.separator).lstrip(self.separator)
-            # print(prefix_increment)
-            if len(self.counters) > index and not self.counters[index].key == prefix_increment:
+        # print('Adjusting prefixes. Current {}, new {}, key: {}'.format(self.counters[-1].key, prefix_dir.lstrip(self.separator), key))
+        for index, prefix_part in enumerate(prefix_parts):
+            prefix_increment = (prefix_increment + prefix_part + self.separator) #.rstrip(self.separator)
+            counter_index = index + 1
+            # print("index: {}, {}, len: {}".format(counter_index, prefix_increment, len(self.counters)))
+            if len(self.counters) > counter_index and not self.counters[counter_index].key == prefix_increment:
                 # Path from this point does not exist in the new path
                 self.reports_at_depth = 0
-                while len(self.counters) > index:
-                    counter = self.counters.pop()
-                    # Add totals to next counter
-                    self.counters[-1] = self.counters[-1] + counter
-                    # Report totals for this prefix
-                    self.report(counter)
-            if len(self.counters) <= index:
+                while len(self.counters) > counter_index:
+                    self._pop_counter()
+            if len(self.counters) <= counter_index:
                 self.reports_at_depth = 0
                 # Create a new counter for this path
                 # print('Adding new prefix {}.'.format(prefix_increment))
                 self.counters.append(Prefix(key=prefix_increment))
-                # print('Markers: {}'.format(self.counters))
             # print(self.counters)
-            index = index + 1
+        while len(self.counters) > len(prefix_parts) +1:
+            # print("pop! {}".format(prefix_parts))
+            self._pop_counter()
+            # print(self.counters)
 
 
     def finalise(self):
         while self.counters:
-            counter = self.counters.pop()
-            # Add totals to next counter
-            if self.counters:
-                self.counters[-1] = self.counters[-1] + counter
-            # Report totals for this prefix
-            self.report(counter)
+            self._pop_counter()
 
 
     def count_list(self, data_list):
         if not data_list:
             return
         fast_count = self.counters[-1].compare(data_list[-1], self.depth, self.separator)
+        # print(fast_count)
         if not fast_count:
             # Try setting the prefix to the front object
             self._set_prefix(data_list[0].key)
@@ -198,18 +204,19 @@ class S3Counter():
         else:
             # Don't know about how the objects on this page match up, indexes will need to be changed.
             # print("Slow count {}".format(data_list[-1].key))
-            if len(data_list) > 16:
+            if len(data_list) > 8:
                 # B chop the list
                 pivot = int(len(data_list) / 2)
-                self.count_list(data_list[0:(pivot-1)])
-                self.count_list(data_list[pivot:(len(data_list)-1)])
+                self.count_list(data_list[0:pivot])
+                self.count_list(data_list[pivot:])
             else:
                 # List is small, count the items
                 for data_object in data_list:
                     if not self.counters[-1].compare(data_object, self.depth, self.separator):
                         self._set_prefix(data_object.key)
                     self.counters[-1] = self.counters[-1] + data_object
-                    if self.reports_at_depth < self.limit and data_object.depth(separator=self.separator) < self.depth:
+                    # print("{}: depth: {}".format(data_object.key, data_object.depth(separator=self.separator)))
+                    if self.reports_at_depth < self.limit and data_object.depth(separator=self.separator) <= self.depth:
                         self.report(data_object)
                         self.reports_at_depth = self.reports_at_depth + 1
                         if self.reports_at_depth == self.limit:
@@ -328,7 +335,7 @@ async def s3_disk_usage(
     )
     try:
         paginator = client.get_paginator('list_objects_v2')
-        page_iterator = paginator.paginate(Bucket=Bucket, Prefix=Prefix) # Delimiter=Delimiter
+        page_iterator = paginator.paginate(Bucket=Bucket, Prefix=Prefix) #, Delimiter=Delimiter)
 
         last_page = {"Contents": []}
         task = asyncio.create_task(count_page(counter, last_page))
@@ -336,10 +343,10 @@ async def s3_disk_usage(
             # Count the files
             await task
             last_page = page
+            # print(last_page)
             task = asyncio.create_task(count_page(counter, last_page))
             # Measured speed difference between synchronous and asynchronous methods was marginal..
         await task
-        await count_page(counter, page)
         counter.finalise()
     except Exception as e:
         print("Exception counting objects in s3://{}/{}".format(Bucket, Prefix))
