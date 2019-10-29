@@ -9,6 +9,8 @@ This utility counts disk space in S3 by path (and also optionally by storage tie
 
 - Uses the low level client and paging to cut the number of requests to S3, retrieving answers in a fast an inexpensive way.
 
+- Can analyse usage from S3 inventory reports very quickly instead of using the list API.
+
 - Uses streaming so that the memory footprint is reasonable even, for huge buckets containing billions of small objects.
 
 - Has been packaged as a module for easy installation with pip, and with a cli entrypoint set up.
@@ -42,6 +44,9 @@ s3du --bucket my-bucket --file contents.json --human
 
 # Analyse a bucket using a delimiter other than the default /
 s3du --bucket my-bucket --delimiter '\'
+
+# Analyse S3 usage using an inventory report instead of the list API
+s3du --prefix my/file/location --depth 2 --inventory-url 's3://my-report-bucket/s3-inventories/my-data-bucket/my-report/2019-10-28T04-00Z/'
 ```
 
 The format will look like this, the fields are size in bytes (b), number of files (N), file name, oldest file date (O), newest file date (N):
