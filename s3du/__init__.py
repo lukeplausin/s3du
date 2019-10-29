@@ -311,7 +311,6 @@ def s3_disk_usage_from_inventory(
 
 async def count_page(counter, page):
     counter.count_list([Prefix(data=obj) for obj in page.get('Contents', []) ])
-    counter.finalise()
 
 
 async def s3_disk_usage( 
