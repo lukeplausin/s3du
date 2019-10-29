@@ -38,14 +38,16 @@ def human_bytes(size, base=2):
 
 
 class Prefix():
-    def __init__(self, data=None, key=""):
+    __slots__ = ('number_objects', 'size', 'oldest', 'newest', 'key', 'breakdown')
+    def __init__(self, data=None, key="", number_objects=0, size=0, breakdown={},
+            oldest=datetime.datetime.now(tz=tzutc), newest=datetime.datetime(year=1990, month=1, day=1).astimezone(tzutc)):
         if data is None:
-            self.number_objects = 0
-            self.size = 0
-            self.oldest = datetime.datetime.now(tz=tzutc)
-            self.newest = datetime.datetime(year=1990, month=1, day=1).astimezone(tzutc)
+            self.number_objects = number_objects
+            self.size = size
+            self.oldest = oldest
+            self.newest = newest
             self.key = key
-            self.breakdown = {}
+            self.breakdown = breakdown
         else:
             self.number_objects = 1
             self.size = data['Size']
@@ -65,6 +67,9 @@ class Prefix():
             self.breakdown.get(data['StorageClass'], 0) + data['Size']
         )
 
+    def depth(self, separator='/'):
+        return(len(self.key.rstrip(separator).split(separator)))
+
     def __add__(self, other):
         self.number_objects = self.number_objects + other.number_objects
         self.size = self.size + other.size
@@ -76,6 +81,18 @@ class Prefix():
             )
         return self
 
+    def compare(self, other, depth, separator='/'):
+        # Check if prefixes are 'equal' to the given depth
+        l_prefix_parts = (separator + self.key.lstrip(separator)).split(separator)
+        r_prefix_parts = (separator + other.key.lstrip(separator)).split(separator)
+
+        if depth >= 0:
+            # print(l_prefix_parts[0:min(len(l_prefix_parts), depth)])
+            # print(r_prefix_parts[0:min(len(r_prefix_parts), depth)])
+            return l_prefix_parts[0:min(len(l_prefix_parts), depth)] == r_prefix_parts[0:min(len(r_prefix_parts), depth)]
+        else:
+            return l_prefix_parts == r_prefix_parts
+
 
 class S3Counter():
     def __init__(self, prefix='', separator='/', depth=-1, limit=20, file_name="", human=False):
@@ -84,9 +101,9 @@ class S3Counter():
         self.prefix = prefix
         self.depth = depth
         self.limit = limit
-        self.current_prefix = separator + prefix
         self.counters = [Prefix(key=prefix)]
         self.human = human
+        self.reports_at_depth = 0
 
         self.file_name = file_name
         if self.file_name:
@@ -111,70 +128,49 @@ class S3Counter():
 
         if self.file_name: 
             self.output_file.write('{{"N":{number_objects}, "size":{size}, "key":"{key}", "oldest":"{oldest}", "newest":"{newest}", "breakdown":{breakdown_str}}}\n'.format(
-                breakdown_str=json.dumps(counter.breakdown), **vars(counter)))
+                breakdown_str=json.dumps(counter.breakdown),
+                number_objects=counter.number_objects,
+                size=counter.size,
+                key=counter.key,
+                oldest=counter.oldest,
+                newest=counter.newest
+            ))
 
-        # f.write("\n]\n")
     def report_omission(self):
         print("                         additional objects under \"{}\" omitted...".format(
             self.counters[-1].key
         ))
 
-    def _compare_prefixes(self, l_prefix, r_prefix):
-        # Check if prefixes are 'equal' to the given depth
-        l_prefix_parts = (self.separator + l_prefix.lstrip(self.separator)).split(self.separator)
-        r_prefix_parts = (self.separator + r_prefix.lstrip(self.separator)).split(self.separator)
+    def _set_prefix(self, key):
+        # Set the markers to the given object
 
-        if self.depth >= 0:
-            return l_prefix_parts[0:min(len(l_prefix_parts), self.depth)] == r_prefix_parts[0:min(len(r_prefix_parts), self.depth)]
-        else:
-            l_prefix_parts == r_prefix_parts
+        prefix_dir = key.rsplit(self.separator, maxsplit=1)[0]
+        # print('Adjusting prefixes. Current {}, new {}'.format(self.counters[-1].key, prefix_dir))
+        prefix_parts = prefix_dir.split(self.separator)
+        prefix_parts = prefix_parts[0:min(self.depth, len(prefix_parts))]
+        prefix_increment = ''
+        index = 1
+        for prefix_part in prefix_parts:
+            prefix_increment = (prefix_increment + prefix_part + self.separator).lstrip(self.separator)
+            # print(prefix_increment)
+            if len(self.counters) > index and not self.counters[index].key == prefix_increment:
+                # Path from this point does not exist in the new path
+                self.reports_at_depth = 0
+                while len(self.counters) > index:
+                    counter = self.counters.pop()
+                    # Add totals to next counter
+                    self.counters[-1] = self.counters[-1] + counter
+                    # Report totals for this prefix
+                    self.report(counter)
+            if len(self.counters) <= index:
+                self.reports_at_depth = 0
+                # Create a new counter for this path
+                # print('Adding new prefix {}.'.format(prefix_increment))
+                self.counters.append(Prefix(key=prefix_increment))
+                # print('Markers: {}'.format(self.counters))
+            # print(self.counters)
+            index = index + 1
 
-
-    def count(self, data_object):
-        # Make sure that the correct counters are being held
-        prefix_dir = (self.separator + data_object['Key']).rsplit(self.separator, maxsplit=1)[0]
-
-        if self.depth >= 0 and data_object['Key'].count(self.separator) >= self.depth:
-            # Don't show the object just count it (out of depth)
-            self.counters[-1].count(data_object)
-        elif self._compare_prefixes(self.current_prefix, prefix_dir):
-            # Current prefix is set correctly, display this object
-            if self.counters[-1].number_objects >= self.limit:
-                # Do not display this object, just count it (truncate long list)
-                self.counters[-1].count(data_object)
-            else:
-                # Display and count object
-                counter = Prefix(data=data_object)
-                self.counters[-1] = self.counters[-1] + counter
-                self.report(counter)
-                if self.counters[-1].number_objects >= self.limit:
-                    self.report_omission()
-        else:
-            # Current prefix is not correct, adjust it
-            # print('Adjusting prefixes. Current {}, new {}'.format(self.current_prefix, prefix_dir))
-            prefix_increment = ''
-            index = 0
-            for prefix_part in prefix_dir.split(self.separator):
-                prefix_increment = (prefix_increment + prefix_part + self.separator).lstrip(self.separator)
-                if len(self.counters) > index and not self.counters[index].key == prefix_increment:
-                    # Path from this point does not exist in the new path
-                    while len(self.counters) > index:
-                        counter = self.counters.pop()
-                        # Add totals to next counter
-                        self.counters[-1] = self.counters[-1] + counter
-                        # Report totals for this prefix
-                        self.report(counter)
-                if len(self.counters) <= index:
-                    # Create a new counter for this path
-                    if data_object['Key'][-1] == self.separator:
-                        # print('Adding new marker object {}.'.format(prefix_increment))
-                        self.counters.append(Prefix(data=data_object))
-                    else:
-                        # print('Adding new prefix {}.'.format(prefix_increment))
-                        self.counters.append(Prefix(key=prefix_increment))
-                    # print('Markers: {}'.format(self.counters))
-                self.current_prefix = self.separator + prefix_increment.lstrip(self.separator).rstrip(self.separator)
-                index = index + 1
 
     def finalise(self):
         while self.counters:
@@ -189,15 +185,41 @@ class S3Counter():
     def count_list(self, data_list):
         if not data_list:
             return
-        prefix_dir_end = (self.separator + data_list[-1]['Key']).rsplit(self.separator, maxsplit=1)[0]
-        if self._compare_prefixes(self.current_prefix, prefix_dir_end):
-            # All items on this page are in the current prefix. Do a fast count.
+        fast_count = self.counters[-1].compare(data_list[-1], self.depth, self.separator)
+        if not fast_count:
+            # Try setting the prefix to the front object
+            self._set_prefix(data_list[0].key)
+            fast_count = self.counters[-1].compare(data_list[-1], self.depth, self.separator)
+        if fast_count:
+            # All items on this page are in the current prefix. Do a fast count until the end.
+            # print("Fast count {}".format(data_list[-1].key))
             for data_object in data_list:
-                self.counters[-1].count(data_object)
+                self.counters[-1] = self.counters[-1] + data_object
         else:
-            # Items are a combination of prefixes. Check all prefixes while counting
-            for data_object in data_list:
-                self.count(data_object)
+            # Don't know about how the objects on this page match up, indexes will need to be changed.
+            # print("Slow count {}".format(data_list[-1].key))
+            if len(data_list) > 16:
+                # B chop the list
+                pivot = int(len(data_list) / 2)
+                self.count_list(data_list[0:(pivot-1)])
+                self.count_list(data_list[pivot:(len(data_list)-1)])
+            else:
+                # List is small, count the items
+                for data_object in data_list:
+                    if not self.counters[-1].compare(data_object, self.depth, self.separator):
+                        self._set_prefix(data_object.key)
+                    self.counters[-1] = self.counters[-1] + data_object
+                    if self.reports_at_depth < self.limit and data_object.depth(separator=self.separator) < self.depth:
+                        self.report(data_object)
+                        self.reports_at_depth = self.reports_at_depth + 1
+                        if self.reports_at_depth == self.limit:
+                            self.report_omission()
+
+
+def peek_inventory_data_file(Bucket, Key, fields, client):
+    entry = next(read_inventory_data_file(
+        Bucket=Bucket, Key=Key, fields=fields, client=client, page_size=1))
+    return entry[0].key
 
 
 def read_inventory_data_file(Bucket, Key, fields, client, page_size=500):
@@ -209,19 +231,30 @@ def read_inventory_data_file(Bucket, Key, fields, client, page_size=500):
     stream = codecs.iterdecode(stream, encoding='utf-8')
     reader = csv.reader(stream)
     page = []
-    types = [str for i in range(len(fields))]
-    for i, field in enumerate(fields):
-        if field == 'Size':
-            types[i] = int
-        elif field == 'LastModified':
-            types[i] = dateutil.parser.parse
+    idx_size = fields.index("Size")
+    idx_key = fields.index("Key")
+    idx_storageclass = fields.index("StorageClass")
+    idx_time = fields.index("LastModifiedDate")
+
     for line in reader:
-        page.append({
-            fields[i]: types[i](data) for i, data in enumerate(line)
-        })
-        if len(page) >= page_size:
-            yield page
-            page = []
+        try:
+            dt = datetime.datetime.strptime(line[idx_time], "%Y-%m-%dT%H:%M:%S.%f%z")
+            size = line[idx_size]
+            page.append(
+                Prefix(
+                    key=line[idx_key],
+                    number_objects=1,
+                    size=(int(size) if size else 0),
+                    breakdown={line[idx_storageclass]: (int(size) if size else 0)},
+                    oldest=dt,
+                    newest=dt
+            ))
+            if len(page) >= page_size:
+                yield page
+                page = []
+        except Exception as e:
+            print("Could not parse line {} with fields {}.".format(line, fields))
+            raise e
     yield page
 
 
@@ -237,15 +270,18 @@ def s3_disk_usage_from_inventory(
     except Exception as e:
         raise Exception("An inventory URL must be an S3 location in the format s3://mybucket/myprefix/sourcebucket/2019-10-27T04-00Z/. {}".format(e))
 
-    manifest_object = client.get_object(Bucket=inventory_bucket, Key=(inventory_location.path.strip('/') + '/manifest.json'))
+    try:
+        manifest_key = (inventory_location.path.strip('/') + '/manifest.json')
+        manifest_object = client.get_object(Bucket=inventory_bucket, Key=manifest_key)
+    except Exception as e:
+        print("Could not access manifest key {}".format(manifest_key))
+        raise e
+
     manifest = json.load(manifest_object['Body'])
     if not manifest['fileFormat']:
         raise Exception("Unsupported report format {}. Supported formats: ['CSV'].".format(manifest['fileFormat']))
     schema = manifest['fileSchema']
     fields = [field.strip() for field in schema.split(',')]
-    for i, field in enumerate(fields):
-        if field == 'LastModifiedDate':
-            fields[i] = 'LastModified'
 
     # Start counting objects
     counter = S3Counter(
@@ -257,16 +293,25 @@ def s3_disk_usage_from_inventory(
         human=Human
     )
 
-    for data_file in manifest['files']:
-        try:
-            for page in read_inventory_data_file(Bucket=inventory_bucket, Key=data_file['key'], fields=fields, client=client):
-                counter.count_list(page)
-        except Exception as e:
-            print("Failed to count data file {key}.".format(**data_file))
+    # For some reason the file orders are screwed up...
+    for fileno, data_file in enumerate(manifest['files']):
+        data_file['first_key'] = peek_inventory_data_file(
+            Bucket=inventory_bucket, Key=data_file['key'], fields=fields, client=client
+        )
+
+    manifest['files'] = [x for _,x in sorted(
+        zip([obj['first_key'] for obj in manifest['files']],manifest['files']))]
+
+    for fileno, data_file in enumerate(manifest['files']):
+        # print("Opening file ({} / {}): {}".format(fileno, len(manifest['files']), data_file))
+        for page in read_inventory_data_file(Bucket=inventory_bucket, Key=data_file['key'], fields=fields, client=client):
+            counter.count_list(page)
+    counter.finalise()
 
 
 async def count_page(counter, page):
-    counter.count_list(page.get('Contents', []))
+    counter.count_list([Prefix(data=obj) for obj in page.get('Contents', []) ])
+    counter.finalise()
 
 
 async def s3_disk_usage( 
